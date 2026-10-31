@@ -1,6 +1,3 @@
-# Built by scripts/build.sh; the plugin falls back to pgrep without it.
-scripts/rex-window-id
-
 # Recordings and their ffmpeg logs.
 *.mov
 *.mov.log

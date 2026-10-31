@@ -3,10 +3,6 @@
 
 local deps = {}
 
-function deps.root()
-  return debug.getinfo(1, "S").source:match("^@?(.*/)") or "./"
-end
-
 local function describe(result)
   if result.stderr and result.stderr ~= "" then return result.stderr end
   if result.stdout and result.stdout ~= "" then return result.stdout end
@@ -24,7 +20,6 @@ end
 function deps.default()
   local rt = {
     fs = deps.fs(),
-    root = deps.root(),
     json = rex.json,
     env = function(name) return os.getenv(name) end,
     date = function(format) return os.date(format) end,

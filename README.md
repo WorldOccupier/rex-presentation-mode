@@ -86,8 +86,6 @@ make verify    # the live app: font, zoom, and a real recording.
 
 `make unit` runs under plain `lua` or `luajit`, and needs neither Rex nor ffmpeg. `make verify` raises the live font by four points, zooms the focused pane, records two seconds to a temporary file, then puts everything back. It does not go full screen.
 
-`make build` compiles `scripts/rex-window-id`, the optional window probe. The plugin falls back to `pgrep` without it.
-
 ## Layout
 
 | File | Purpose |

@@ -56,14 +56,9 @@ function record.new(rt)
     return (result.stdout or ""):find("ffmpeg", 1, true) ~= nil
   end
 
-  -- The window ID probe answers the same question as pgrep but also compiles
-  -- and runs Swift, so pgrep is tried last as the cheap path.
   function self.app_open()
-    local probe = rt.root .. "scripts/rex-window-id"
-    local result = rt.exec({ probe })
+    local result = rt.exec({ "pgrep", "-x", "Rex" })
     if result and result.ok then return true end
-    local fallback = rt.exec({ "pgrep", "-x", "Rex" })
-    if fallback and fallback.ok then return true end
     return nil, "no Rex app is running"
   end
 

@@ -49,8 +49,12 @@ function M.new(rt)
     return true
   end
 
-  local function undo(applied, zoomed_block, entered, session_id, window_id)
+  local function undo(applied, zoomed_block, entered, session_id, window_id, recording)
     local errors = {}
+    if recording and recording.pid then
+      local _, err = recorder.stop(recording.pid)
+      if err then errors[#errors + 1] = err end
+    end
     if entered then
       local _, err = ui.exit_fullscreen(session_id, window_id)
       if err then errors[#errors + 1] = err end
@@ -66,6 +70,15 @@ function M.new(rt)
     return errors
   end
 
+  local function with_lock(action)
+    local token, lock_err = store.lock()
+    if not token then return nil, lock_err end
+    local ok, value, err = pcall(action)
+    store.unlock()
+    if not ok then error(value, 0) end
+    return value, err
+  end
+
   -- Restores every part and marks each one done on the saved table, so a retry
   -- after a partial failure does not undo the same thing twice.
   local function restore(saved)
@@ -74,6 +87,7 @@ function M.new(rt)
     local stopped, stop_err = recorder.stop(saved.record_pid)
     if stop_err then
       errors[#errors + 1] = stop_err
+      if not recorder.alive(saved.record_pid) then saved.record_pid = nil end
     else
       saved.record_pid = nil
     end
@@ -106,13 +120,7 @@ function M.new(rt)
     return errors
   end
 
-  function self.enter_locked(args, session_id)
-    local target, size_err = app.clamp(want(args, "size", M.DEFAULT_SIZE))
-    if not target then return nil, size_err end
-
-    session_id = session_id or rt.session_id()
-    local window_id = ui.active_window_id(session_id)
-
+  local function apply_effects(args, target, session_id, window_id)
     local applied, before, font_err, font_warning = ui.resize_to(target, true, app.FALLBACK_SIZE)
     if font_warning then rt.log(font_warning) end
     if font_err then return nil, with_undo(font_err, undo(applied)) end
@@ -143,53 +151,70 @@ function M.new(rt)
       end
     end
 
+    return {
+      applied = applied,
+      before = before,
+      zoomed = zoomed,
+      entered = entered,
+      recording = recording,
+    }
+  end
+
+  function self.enter_locked(args, session_id)
+    local target, size_err = app.clamp(want(args, "size", M.DEFAULT_SIZE))
+    if not target then return nil, size_err end
+
+    session_id = session_id or rt.session_id()
+    local window_id = ui.active_window_id(session_id)
+    local effects, effects_err = apply_effects(args, target, session_id, window_id)
+    if not effects then return nil, effects_err end
+
     local value = {
       on = true,
-      font_before = before,
-      font_steps = applied,
-      zoomed_block = zoomed,
-      fullscreen = entered and true or false,
+      font_before = effects.before,
+      font_steps = effects.applied,
+      zoomed_block = effects.zoomed,
+      fullscreen = effects.entered and true or false,
       session_id = session_id,
       window_id = window_id,
-      recording = recording and recording.path or nil,
-      record_pid = recording and recording.pid or nil,
+      recording = effects.recording and effects.recording.path or nil,
+      record_pid = effects.recording and effects.recording.pid or nil,
       started_at = rt.time(),
     }
 
     local saved, save_err = store.save(value)
     if not saved then
-      local errors = undo(applied, zoomed, entered, session_id, window_id)
+      local errors = undo(
+        effects.applied, effects.zoomed, effects.entered,
+        session_id, window_id, effects.recording
+      )
       return nil, with_undo("could not save presentation state: " .. tostring(save_err), errors)
     end
     return value
   end
 
   function self.enter(args, session_id)
-    local token, lock_err = store.lock()
-    if not token then return nil, lock_err end
-    local value, err = self.enter_locked(args, session_id)
-    store.unlock()
-    return value, err
+    return with_lock(function()
+      return self.enter_locked(args, session_id)
+    end)
   end
 
   function self.leave_locked()
     local saved = store.load()
-    if not saved.on then return { on = false } end
+    if not saved.on then return { on = false, errors = {} } end
 
     local errors = restore(saved)
+    local active = #errors > 0
 
     -- State is the undo log, so it stays while any part of the restore failed
     -- and the next press retries only what is left.
-    if #errors == 0 then store.clear() else store.save(saved) end
-    return { on = false, recording = saved.recording, errors = errors }
+    if not active then store.clear() else store.save(saved) end
+    local err = active and table.concat(errors, "; ") or nil
+    return { on = active, recording = saved.recording, errors = errors }, err
   end
 
   function self.leave()
-    local token, lock_err = store.lock()
-    if not token then return nil, lock_err end
-    local value = self.leave_locked()
-    store.unlock()
-    return value
+    return with_lock(self.leave_locked)
   end
 
   function self.stale(saved)
@@ -201,12 +226,17 @@ function M.new(rt)
 
   function self.reset(args)
     local saved = store.load()
+    if saved.record_pid and not recorder.alive(saved.record_pid) then
+      saved.record_pid = nil
+    end
     local had_font = saved.font_before ~= nil or (saved.font_steps or 0) ~= 0
     local errors = restore(saved)
 
-    if args and args.size then
-      local target = app.clamp(args.size)
-      if target then
+    if args and args.size ~= nil then
+      local target, size_err = app.clamp(args.size)
+      if not target then
+        errors[#errors + 1] = size_err
+      else
         local _, _, resize_err = ui.resize_to(target, false)
         if resize_err then errors[#errors + 1] = resize_err end
       end
@@ -218,12 +248,17 @@ function M.new(rt)
 
     store.clear()
     store.force_unlock()
-    return { on = false, errors = errors }
+    local err = #errors > 0 and table.concat(errors, "; ") or nil
+    return { on = false, errors = errors }, err
   end
 
   function self.run(ctx, args)
     args = args or {}
-    if want(args, "reset", false) then return self.reset(args) end
+    if want(args, "reset", false) then
+      local value, err = self.reset(args)
+      if err then error(err, 0) end
+      return value
+    end
 
     -- An action runs in a stored closure, where rex.session_id is not updated
     -- for each request. The calling context carries the real session.
@@ -231,6 +266,11 @@ function M.new(rt)
 
     local saved = store.load()
     if self.stale(saved) then
+      if args.on ~= true then
+        local value, err = self.reset({})
+        if err then error(err, 0) end
+        return value
+      end
       rt.log("presentation mode was interrupted; restoring before entering")
       self.reset({})
       saved = { on = false }
@@ -239,15 +279,13 @@ function M.new(rt)
     local value, err
     if args.on == true then
       value, err = self.enter(args, session_id)
-    elseif args.on == false then
-      value, err = self.leave()
-    elseif saved.on then
+    elseif args.on == false or saved.on then
       value, err = self.leave()
     else
       value, err = self.enter(args, session_id)
     end
 
-    if not value then error(err, 0) end
+    if not value or err then error(err, 0) end
     return value
   end
 

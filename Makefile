@@ -1,7 +1,7 @@
 REX ?= $(HOME)/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex
 LUA ?= lua
 
-.PHONY: test unit verify build reload
+.PHONY: test unit verify reload
 
 test: unit
 
@@ -11,9 +11,6 @@ unit:
 
 verify:
 	@scripts/verify.sh
-
-build:
-	@scripts/build.sh
 
 reload:
 	@"$(REX)" config reload

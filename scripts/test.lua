@@ -61,7 +61,6 @@ end
 
 local function runtime(world)
   local rt = {
-    root = "/repo/",
     json = { encode = json_encode, decode = json_decode },
     env = function(name)
       return ({ HOME = "/home/tester", XDG_STATE_HOME = "/state" })[name]
@@ -88,7 +87,7 @@ local function runtime(world)
           close = function() end,
         }
       end
-      if world.fail_write then return nil, "disk full" end
+      if world.fail_write and not path:find("%.lock") then return nil, "disk full" end
       local buffer = {}
       return {
         write = function(_, chunk) buffer[#buffer + 1] = chunk end,
@@ -154,10 +153,6 @@ local function runtime(world)
       return { ok = true, stdout = tostring(world.report_font or world.font), stderr = "" }
     end
     if program == "mkdir" then return { ok = true, stdout = "", stderr = "" } end
-    if program == "/repo/scripts/rex-window-id" then
-      if world.app_running then return { ok = true, stdout = "12\n", stderr = "" } end
-      return { ok = false, code = 1, stdout = "", stderr = "no Rex window" }
-    end
     if program == "pgrep" then
       if world.app_running then return { ok = true, stdout = "1\n", stderr = "" } end
       return { ok = false, code = 1, stdout = "", stderr = "" }
@@ -334,9 +329,10 @@ local function failed_save_rolls_back()
   world.fail_write = true
   local mode = instance(world)
 
-  local value, err = mode.enter({ record = false })
+  local value, err = mode.enter({ output = OUTPUT })
   check("a failed save is reported", value == nil and err ~= nil, err)
   check("a failed save restores the font", world.font == 14, world.font)
+  check("a failed save stops the recording", world.recording_alive == false)
 end
 
 local function failed_restore_keeps_state()
@@ -345,8 +341,8 @@ local function failed_restore_keeps_state()
   mode.enter({ record = false })
 
   world.fail_font = true
-  local left = mode.leave()
-  check("a failed restore is reported", #left.errors == 1, left.errors[1])
+  local ok, run_err = pcall(mode.run, nil, {})
+  check("a failed restore raises an error from run", not ok and run_err ~= nil, run_err)
   check("a failed restore keeps the state for a retry", state_of(world).on == true)
 
   world.fail_font = false
@@ -419,8 +415,16 @@ local function stale_state_does_not_block()
   world.recording_alive = false
   local mode = instance(world)
 
-  local value = mode.run(nil, { size = 24, record = false })
-  check("stale state lets enter proceed", value and value.on == true)
+  local left = mode.run(nil, {})
+  check("toggling a stale session leaves instead of re-entering", left and left.on == false)
+  check("toggling a stale session restores the font", world.font == 14, world.font)
+
+  world.font = 20
+  state.new(runtime(world)).save({
+    on = true, record_pid = 999, font_before = 14, font_steps = 6, started_at = world.now,
+  })
+  local value = mode.run(nil, { on = true, size = 24, record = false })
+  check("stale state lets explicit enter proceed", value and value.on == true)
   check("stale state is restored before entering again", value and value.font_before == 14,
     value and value.font_before)
   check("stale state is replaced", state_of(world).on == true)
