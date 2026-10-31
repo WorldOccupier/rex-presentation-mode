@@ -64,7 +64,7 @@ local function runtime(world)
     root = "/repo/",
     json = { encode = json_encode, decode = json_decode },
     env = function(name)
-      return ({ HOME = "/home/vatsa", XDG_STATE_HOME = "/state" })[name]
+      return ({ HOME = "/home/tester", XDG_STATE_HOME = "/state" })[name]
     end,
     date = function() return "2026-10-31-120000" end,
     time = function() return world.now end,
